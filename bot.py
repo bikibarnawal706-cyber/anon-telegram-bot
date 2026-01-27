@@ -16,7 +16,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 waiting_user = None
 active_chats = {}
-authorized_users = set()
+OWNER_ID = 8539661882
+
+authorized_users = {OWNER_ID}
 
 def is_authorized(user_id: int) -> bool:
     return user_id in authorized_users
