@@ -120,16 +120,15 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Chat stopped.")
 
-
 async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
 
     if not is_authorized(user_id):
-    await update.message.reply_text(
-        "🔒 Access required.\nUse /join <code> to enter."
-    )
-    return
+        await update.message.reply_text(
+            "🔒 Access required.\nUse /join <code> to enter."
+        )
+        return
 
     if text == "🔄 Next":
         await next_chat(update, context)
@@ -142,17 +141,11 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in active_chats:
         partner = active_chats[user_id]
         await context.bot.send_message(partner, text)
-
     else:
         await update.message.reply_text(
             "Tap 🔄 Next to find a stranger.",
             reply_markup=keyboard
         )
-    if user_id in active_chats:
-        partner = active_chats[user_id]
-        await context.bot.send_message(partner, update.message.text)
-    else:
-        await update.message.reply_text("Use /next to find a stranger.")
 
 
 app = ApplicationBuilder().token(TOKEN).build()
