@@ -1,3 +1,4 @@
+import os
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -7,7 +8,9 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = "8536390960:AAE9znir2HIel3V3dqkvktTIxm2eGz9raBg"
+
+TOKEN = os.getenv("BOT_TOKEN")
+
 
 waiting_user = None
 active_chats = {}
@@ -69,3 +72,4 @@ app.add_handler(CommandHandler("stop", stop))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
 app.run_polling()
+
