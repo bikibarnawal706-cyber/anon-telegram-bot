@@ -38,27 +38,28 @@ async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(partner, "Stranger left the chat.")
 
     if waiting_user and waiting_user != user_id:
-    partner = waiting_user
-    waiting_user = None
+        partner = waiting_user
+        waiting_user = None
 
-    active_chats[user_id] = partner
-    active_chats[partner] = user_id
+        active_chats[user_id] = partner
+        active_chats[partner] = user_id
 
-    await context.bot.send_message(
-        partner,
-        "You are now connected to a stranger.",
-        reply_markup=keyboard
-    )
+        await context.bot.send_message(
+            partner,
+            "You are now connected to a stranger.",
+            reply_markup=keyboard
+        )
 
-    await update.message.reply_text(
-        "You are now connected to a stranger.",
-        reply_markup=keyboard
-    )
-
+        await update.message.reply_text(
+            "You are now connected to a stranger.",
+            reply_markup=keyboard
+        )
     else:
         waiting_user = user_id
-        await update.message.reply_text("Searching for a stranger...")
-
+        await update.message.reply_text(
+            "Searching for a stranger...",
+            reply_markup=keyboard
+        )
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
