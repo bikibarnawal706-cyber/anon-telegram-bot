@@ -291,11 +291,14 @@ def main():
     app.add_handler(CommandHandler("revoke", revoke))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL,
-    )
+WEBHOOK_PATH = "/telegram"
+
+app.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=WEBHOOK_PATH,
+    webhook_url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
+)
 
 if __name__ == "__main__":
     main()
