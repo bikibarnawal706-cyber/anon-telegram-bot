@@ -1,6 +1,8 @@
 
 import os
 import time
+import asyncio
+from collections import deque
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -25,13 +27,14 @@ active_chats = {}
 authorized_users = {OWNER_ID}
 revoked_users = set()
 
-# ===== RATE LIMITING =====
+# ===== MESSAGE QUEUES =====
 
-last_message_time = {}
-last_next_time = {}
+message_queues = {}        # user_id -> deque
+queue_tasks = {}           # user_id -> asyncio.Task
+queue_warned = set()       # users already warned
 
-MESSAGE_COOLDOWN = 1.0   # seconds per message
-NEXT_COOLDOWN = 5.0      # seconds per next/search
+QUEUE_DELAY = 1.0          # seconds between messages
+QUEUE_LIMIT = 10           # max queued messages before pause
 
 # ===== HELPERS =====
 
@@ -40,6 +43,23 @@ def is_owner(user_id: int) -> bool:
 
 def is_active(user_id: int) -> bool:
     return user_id in authorized_users and user_id not in revoked_users
+
+async def process_queue(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    while message_queues.get(user_id):
+        msg = message_queues[user_id].popleft()
+
+        if user_id not in active_chats:
+            break
+
+        partner = active_chats[user_id]
+        await context.bot.send_message(partner, msg)
+
+        await asyncio.sleep(QUEUE_DELAY)
+
+    # cleanup
+    message_queues.pop(user_id, None)
+    queue_tasks.pop(user_id, None)
+    queue_warned.discard(user_id)
 
 def can_send_message(user_id: int) -> bool:
     now = time.time()
@@ -236,7 +256,11 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_active(user_id):
         return
 
-    if not is_owner(user_id) and not can_send_message(user_id):
+    # OWNER BYPASS
+    if is_owner(user_id):
+        if user_id in active_chats:
+            partner = active_chats[user_id]
+            await context.bot.send_message(partner, text)
         return
 
     if text == "🔄 Next":
@@ -247,14 +271,35 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await stop(update, context)
         return
 
-    if user_id in active_chats:
-        partner = active_chats[user_id]
-        await context.bot.send_message(partner, text)
-    else:
+    if user_id not in active_chats:
         await update.message.reply_text(
             "Tap 🔄 Next to find a stranger.",
             reply_markup=keyboard
         )
+        return
+
+    # initialize queue
+    if user_id not in message_queues:
+        message_queues[user_id] = deque()
+
+    # overrun handling
+    if len(message_queues[user_id]) >= QUEUE_LIMIT:
+        if user_id not in queue_warned:
+            queue_warned.add(user_id)
+            await update.message.reply_text(
+                "⏳ Slow down a bit.\n"
+                "Your messages are being sent in order.\n"
+                "Please wait a moment."
+            )
+        return
+
+    # enqueue message
+    message_queues[user_id].append(text)
+
+    # start worker if not running
+    if user_id not in queue_tasks:
+        task = asyncio.create_task(process_queue(user_id, context))
+        queue_tasks[user_id] = task
 
 # ===== APP SETUP =====
 
