@@ -314,5 +314,8 @@ app.add_handler(CommandHandler("stop", stop))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
 print("Bot starting...")
-app.run_polling()
 
+app.run_polling(
+    drop_pending_updates=True,
+    allowed_updates=Update.ALL_TYPES,
+)
