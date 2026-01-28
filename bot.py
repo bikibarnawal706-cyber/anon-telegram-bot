@@ -313,6 +313,6 @@ app.add_handler(CommandHandler("next", next_chat))
 app.add_handler(CommandHandler("stop", stop))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
+print("Bot starting...")
 app.run_polling()
-
 
