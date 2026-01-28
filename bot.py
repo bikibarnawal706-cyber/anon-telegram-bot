@@ -45,21 +45,25 @@ def can_send_message(user_id: int) -> bool:
     now = time.time()
     last = last_message_time.get(user_id, 0)
 
+    # reserve immediately
+    last_message_time[user_id] = now
+
     if now - last < MESSAGE_COOLDOWN:
         return False
 
-    last_message_time[user_id] = now
     return True
 
 def can_use_next(user_id: int) -> bool:
     now = time.time()
     last = last_next_time.get(user_id, 0)
 
+    last_next_time[user_id] = now
+
     if now - last < NEXT_COOLDOWN:
         return False
 
-    last_next_time[user_id] = now
     return True
+
 
 # ===== KEYBOARD =====
 
