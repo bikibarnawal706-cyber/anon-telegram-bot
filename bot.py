@@ -73,16 +73,6 @@ def can_send_message(user_id: int) -> bool:
 
     return True
 
-def can_use_next(user_id: int) -> bool:
-    now = time.time()
-    last = last_next_time.get(user_id, 0)
-
-    last_next_time[user_id] = now
-
-    if now - last < NEXT_COOLDOWN:
-        return False
-
-    return True
 
 
 # ===== KEYBOARD =====
@@ -202,12 +192,6 @@ async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_active(user_id):
-        return
-
-    if not is_owner(user_id) and not can_use_next(user_id):
-        await update.message.reply_text(
-            "⏳ Please wait a few seconds before searching again."
-        )
         return
 
     if user_id in active_chats:
