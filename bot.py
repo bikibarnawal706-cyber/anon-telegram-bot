@@ -1,5 +1,6 @@
 
 import os
+import time
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -24,6 +25,14 @@ active_chats = {}
 authorized_users = {OWNER_ID}
 revoked_users = set()
 
+# ===== RATE LIMITING =====
+
+last_message_time = {}
+last_next_time = {}
+
+MESSAGE_COOLDOWN = 1.0   # seconds per message
+NEXT_COOLDOWN = 5.0      # seconds per next/search
+
 # ===== HELPERS =====
 
 def is_owner(user_id: int) -> bool:
@@ -31,6 +40,26 @@ def is_owner(user_id: int) -> bool:
 
 def is_active(user_id: int) -> bool:
     return user_id in authorized_users and user_id not in revoked_users
+
+def can_send_message(user_id: int) -> bool:
+    now = time.time()
+    last = last_message_time.get(user_id, 0)
+
+    if now - last < MESSAGE_COOLDOWN:
+        return False
+
+    last_message_time[user_id] = now
+    return True
+
+def can_use_next(user_id: int) -> bool:
+    now = time.time()
+    last = last_next_time.get(user_id, 0)
+
+    if now - last < NEXT_COOLDOWN:
+        return False
+
+    last_next_time[user_id] = now
+    return True
 
 # ===== KEYBOARD =====
 
@@ -151,6 +180,12 @@ async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_active(user_id):
         return
 
+    if not is_owner(user_id) and not can_use_next(user_id):
+        await update.message.reply_text(
+            "⏳ Please wait a few seconds before searching again."
+        )
+        return
+
     if user_id in active_chats:
         partner = active_chats.pop(user_id)
         active_chats.pop(partner, None)
@@ -195,6 +230,9 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_active(user_id):
+        return
+
+    if not is_owner(user_id) and not can_send_message(user_id):
         return
 
     if text == "🔄 Next":
