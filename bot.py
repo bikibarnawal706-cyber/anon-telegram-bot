@@ -1,7 +1,4 @@
-
-
 import os
-import time
 import asyncio
 from collections import deque
 
@@ -14,13 +11,15 @@ from telegram.ext import (
     filters,
 )
 
-# ===== TOKEN =====
+# ================== CONFIG ==================
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = 8539661882  # your Telegram ID
 
-# ===== GLOBAL STATE =====
+PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-OWNER_ID = 8539661882  # <-- your Telegram user ID
+# ================== STATE ==================
 
 waiting_user = None
 active_chats = {}
@@ -28,224 +27,220 @@ active_chats = {}
 authorized_users = {OWNER_ID}
 revoked_users = set()
 
-# ===== MESSAGE QUEUES =====
+# reports (temporary, in-memory)
+reports = {}                  # user_id -> count
+reported_this_chat = set()    # reporter ids
 
-message_queues = {}        # user_id -> deque
-queue_tasks = {}           # user_id -> asyncio.Task
-queue_warned = set()       # users already warned
+# blocks (temporary, in-memory)
+blocks = {}                   # user_id -> set(blocked_user_ids)
 
-QUEUE_DELAY = 1.0          # seconds between messages
-QUEUE_LIMIT = 10           # max queued messages before pause
+# message pacing
+message_queues = {}           # user_id -> deque
+queue_tasks = {}              # user_id -> asyncio.Task
+queue_warned = set()
 
-# ===== HELPERS =====
+QUEUE_DELAY = 1.0
+QUEUE_LIMIT = 10
 
-def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
-
-def is_active(user_id: int) -> bool:
-    return user_id in authorized_users and user_id not in revoked_users
-
-async def process_queue(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    while message_queues.get(user_id):
-        msg = message_queues[user_id].popleft()
-
-        if user_id not in active_chats:
-            break
-
-        partner = active_chats[user_id]
-        await context.bot.send_message(partner, msg)
-
-        await asyncio.sleep(QUEUE_DELAY)
-
-    # cleanup
-    message_queues.pop(user_id, None)
-    queue_tasks.pop(user_id, None)
-    queue_warned.discard(user_id)
-
-def can_send_message(user_id: int) -> bool:
-    now = time.time()
-    last = last_message_time.get(user_id, 0)
-
-    # reserve immediately
-    last_message_time[user_id] = now
-
-    if now - last < MESSAGE_COOLDOWN:
-        return False
-
-    return True
-
-
-
-# ===== KEYBOARD =====
+# ================== KEYBOARDS ==================
 
 keyboard = ReplyKeyboardMarkup(
-    [["🔄 Next", "❌ Stop"]],
+    [["🔄 Next", "❌ Stop"],
+     ["🚨 Report", "🚫 Block"]],
     resize_keyboard=True
 )
 
-# ===== COMMANDS =====
+admin_keyboard = ReplyKeyboardMarkup(
+    [["🚫 Revoke", "✅ Allow"]],
+    resize_keyboard=True
+)
+
+# ================== HELPERS ==================
+
+def is_owner(uid: int) -> bool:
+    return uid == OWNER_ID
+
+def is_active(uid: int) -> bool:
+    return uid in authorized_users and uid not in revoked_users
+
+# ================== QUEUE WORKER ==================
+
+async def process_queue(uid: int, context: ContextTypes.DEFAULT_TYPE):
+    while message_queues.get(uid):
+        msg = message_queues[uid].popleft()
+
+        if uid not in active_chats:
+            break
+
+        await context.bot.send_message(active_chats[uid], msg)
+        await asyncio.sleep(QUEUE_DELAY)
+
+    message_queues.pop(uid, None)
+    queue_tasks.pop(uid, None)
+    queue_warned.discard(uid)
+
+# ================== COMMANDS ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if user_id in revoked_users:
-        return
-
-    if not is_active(user_id):
+    if not is_active(uid):
         await update.message.reply_text(
-            "🔒 This chatbot is invite-only.\n\n"
-            "If you have an invite code, send:\n"
-            "/join <code>\n\n"
-            "Example:\n"
-            "/join TEST123"
+            "🔒 Invite-only anonymous chatbot.\n\n"
+            "Use:\n"
+            "/join <code>"
         )
         return
 
     await update.message.reply_text(
-        "Welcome.\nTap 🔄 Next to find a stranger.\nTap ❌ Stop to end chat.",
+        "Welcome.\nTap 🔄 Next to find a stranger.",
         reply_markup=keyboard
     )
 
 async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if user_id in revoked_users:
+    if uid in revoked_users:
+        await update.message.reply_text("🚫 Access revoked.")
         return
 
-    if is_active(user_id):
-        await update.message.reply_text("You already have access.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage:\n/join <invite_code>")
-        return
-
-    code = context.args[0]
-
-    # TEMP MASTER INVITE
-    if code == "TEST123":
-        authorized_users.add(user_id)
+    if context.args and context.args[0] == "test123":
+        authorized_users.add(uid)
         await update.message.reply_text(
-            "✅ Access granted.\n\n"
-            "Rules:\n"
-            "• No personal info sharing\n"
-            "• Leave anytime with ❌ Stop\n"
-            "• Abuse = permanent removal\n\n"
-            "Tap 🔄 Next to begin.",
+            "✅ Access granted.",
             reply_markup=keyboard
         )
     else:
         await update.message.reply_text("❌ Invalid invite code.")
 
+async def reports_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        return
+
+    if not reports:
+        await update.message.reply_text("No reports yet.")
+        return
+
+    text = "🚨 Reported users:\n\n"
+    for uid, count in sorted(reports.items(), key=lambda x: -x[1]):
+        text += f"{uid} — {count} reports\n"
+
+    await update.message.reply_text(text, reply_markup=admin_keyboard)
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        return
+
+    if not context.args:
+        return
+
+    uid = int(context.args[0])
+    count = reports.get(uid, 0)
+
+    await update.message.reply_text(
+        f"User: {uid}\nReports: {count}",
+        reply_markup=admin_keyboard
+    )
+
 async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    caller_id = update.effective_user.id
-
-    if not is_owner(caller_id):
+    if not is_owner(update.effective_user.id):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage:\n/revoke <user_id>")
+        await update.message.reply_text("Usage: /revoke <user_id>")
         return
 
-    try:
-        target_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
-        return
+    target = int(context.args[0])
+    revoked_users.add(target)
+    authorized_users.discard(target)
 
-    if target_id == OWNER_ID:
-        await update.message.reply_text("❌ You cannot revoke yourself.")
-        return
-
-    authorized_users.discard(target_id)
-    revoked_users.add(target_id)
-
-    if target_id in active_chats:
-        partner = active_chats.pop(target_id)
+    if target in active_chats:
+        partner = active_chats.pop(target)
         active_chats.pop(partner, None)
-        await context.bot.send_message(partner, "⚠️ Stranger left the chat.")
+        await context.bot.send_message(partner, "⚠️ Partner disconnected.")
 
-    await update.message.reply_text(f"✅ User {target_id} revoked.")
+    await update.message.reply_text(f"User {target} revoked.")
 
-async def allow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    caller_id = update.effective_user.id
-
-    if not is_owner(caller_id):
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage:\n/allow <user_id>")
-        return
-
-    try:
-        target_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
-        return
-
-    revoked_users.discard(target_id)
-    authorized_users.add(target_id)
-
-    await update.message.reply_text(f"✅ User {target_id} allowed.")
+# ================== CHAT FLOW ==================
 
 async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global waiting_user
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if not is_active(user_id):
+    if not is_active(uid):
         return
 
-    if user_id in active_chats:
-        partner = active_chats.pop(user_id)
+    if uid in active_chats:
+        partner = active_chats.pop(uid)
         active_chats.pop(partner, None)
-        await context.bot.send_message(partner, "⚠️ Stranger left the chat.")
+        await context.bot.send_message(partner, "⚠️ Partner left.")
 
-    if waiting_user and waiting_user != user_id:
+    if (
+        waiting_user
+        and waiting_user != uid
+        and waiting_user not in blocks.get(uid, set())
+        and uid not in blocks.get(waiting_user, set())
+    ):
         partner = waiting_user
         waiting_user = None
+        active_chats[uid] = partner
+        active_chats[partner] = uid
 
-        active_chats[user_id] = partner
-        active_chats[partner] = user_id
+        reported_this_chat.discard(uid)
+        reported_this_chat.discard(partner)
 
-        await context.bot.send_message(
-            partner,
-            "You are now connected to a stranger.",
-            reply_markup=keyboard
-        )
-
-        await update.message.reply_text(
-            "You are now connected to a stranger.",
-            reply_markup=keyboard
-        )
+        await context.bot.send_message(partner, "🔗 Connected.", reply_markup=keyboard)
+        await update.message.reply_text("🔗 Connected.", reply_markup=keyboard)
     else:
-        waiting_user = user_id
-        await update.message.reply_text(
-            "Searching for a stranger...",
-            reply_markup=keyboard
-        )
+        waiting_user = uid
+        await update.message.reply_text("⏳ Searching...")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if user_id in active_chats:
-        partner = active_chats.pop(user_id)
+    if uid in active_chats:
+        partner = active_chats.pop(uid)
         active_chats.pop(partner, None)
-        await context.bot.send_message(partner, "⚠️ Stranger left the chat.")
+        await context.bot.send_message(partner, "⚠️ Partner disconnected.")
 
-    await update.message.reply_text("Chat stopped.", reply_markup=keyboard)
+    await update.message.reply_text("Chat ended.")
+
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid not in active_chats or uid in reported_this_chat:
+        return
+
+    target = active_chats[uid]
+    reports[target] = reports.get(target, 0) + 1
+    reported_this_chat.add(uid)
+
+    await update.message.reply_text("🚨 Report submitted. Chat ended.")
+    await stop(update, context)
+
+async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid not in active_chats:
+        return
+
+    target = active_chats[uid]
+
+    blocks.setdefault(uid, set()).add(target)
+    blocks.setdefault(target, set()).add(uid)
+
+    await update.message.reply_text(
+        "🚫 User blocked. You won’t be matched again."
+    )
+    await stop(update, context)
+
+# ================== MESSAGE RELAY ==================
 
 async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
 
-    if not is_active(user_id):
-        return
-
-    # OWNER BYPASS
-    if is_owner(user_id):
-        if user_id in active_chats:
-            partner = active_chats[user_id]
-            await context.bot.send_message(partner, text)
+    if not is_active(uid):
         return
 
     if text == "🔄 Next":
@@ -256,57 +251,52 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await stop(update, context)
         return
 
-    if user_id not in active_chats:
-        await update.message.reply_text(
-            "Tap 🔄 Next to find a stranger.",
-            reply_markup=keyboard
+    if text == "🚨 Report":
+        await report(update, context)
+        return
+
+    if text == "🚫 Block":
+        await block(update, context)
+        return
+
+    if uid not in active_chats:
+        await update.message.reply_text("Tap 🔄 Next.")
+        return
+
+    if uid not in message_queues:
+        message_queues[uid] = deque()
+
+    if len(message_queues[uid]) >= QUEUE_LIMIT:
+        if uid not in queue_warned:
+            queue_warned.add(uid)
+            await update.message.reply_text("⏳ Slow down. Messages queued.")
+        return
+
+    message_queues[uid].append(text)
+
+    if uid not in queue_tasks:
+        queue_tasks[uid] = asyncio.create_task(
+            process_queue(uid, context)
         )
-        return
 
-    # initialize queue
-    if user_id not in message_queues:
-        message_queues[user_id] = deque()
+# ================== START APP ==================
 
-    # overrun handling
-    if len(message_queues[user_id]) >= QUEUE_LIMIT:
-        if user_id not in queue_warned:
-            queue_warned.add(user_id)
-            await update.message.reply_text(
-                "⏳ Slow down a bit.\n"
-                "Your messages are being sent in order.\n"
-                "Please wait a moment."
-            )
-        return
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # enqueue message
-    message_queues[user_id].append(text)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("join", join))
+    app.add_handler(CommandHandler("reports", reports_cmd))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("revoke", revoke))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
-    # start worker if not running
-    if user_id not in queue_tasks:
-        task = asyncio.create_task(process_queue(user_id, context))
-        queue_tasks[user_id] = task
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
+    )
 
-# ===== APP SETUP =====
+if __name__ == "__main__":
+    main()
 
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("join", join))
-app.add_handler(CommandHandler("revoke", revoke))
-app.add_handler(CommandHandler("allow", allow))
-app.add_handler(CommandHandler("next", next_chat))
-app.add_handler(CommandHandler("stop", stop))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
-
-print("Bot starting...")
-
-
-
-PORT = int(os.environ.get("PORT", 8080))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-
-app.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    webhook_url=WEBHOOK_URL,
-)
