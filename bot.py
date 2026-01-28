@@ -1,3 +1,4 @@
+print("FILE LOADED")
 import os
 import asyncio
 from collections import deque
@@ -282,6 +283,7 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== START APP ==================
 
 def main():
+    print("MAIN STARTED")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -292,7 +294,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
     WEBHOOK_PATH = "/telegram"
-
+    print("STARTING WEBHOOK")
     app.run_webhook(
     listen="0.0.0.0",
     port=PORT,
